@@ -1,12 +1,14 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   collection,
   getDocs,
+  addDoc,
   setDoc,
   deleteDoc,
   doc,
   getDoc,
   updateDoc,
+  runTransaction,
   serverTimestamp,
 } from "firebase/firestore";
 import { db } from "../firebase";
@@ -40,6 +42,51 @@ const NETWORKS = [
 
 const DESCRIPTIONS = ["Non-Expiring", "Expiring"];
 
+const PAYSTACK_INLINE_SRC = "https://js.paystack.co/v1/inline.js";
+let paystackLoaderPromise = null;
+
+function loadPaystackInline() {
+  if (window.PaystackPop) return Promise.resolve();
+  if (paystackLoaderPromise) return paystackLoaderPromise;
+
+  paystackLoaderPromise = new Promise((resolve, reject) => {
+    const finish = () => {
+      if (window.PaystackPop) {
+        resolve();
+      } else {
+        reject(new Error("Paystack script loaded, but PaystackPop is unavailable (possibly blocked by browser extension or network policy)."));
+      }
+    };
+
+    const fail = () => reject(new Error("Failed to load Paystack inline script."));
+
+    const existing = document.querySelector(`script[src="${PAYSTACK_INLINE_SRC}"]`);
+    if (existing) {
+      if (window.PaystackPop) {
+        resolve();
+        return;
+      }
+
+      existing.addEventListener("load", finish, { once: true });
+      existing.addEventListener("error", fail, { once: true });
+      window.setTimeout(finish, 3000);
+      return;
+    }
+
+    const script = document.createElement("script");
+    script.src = PAYSTACK_INLINE_SRC;
+    script.async = true;
+    script.onload = finish;
+    script.onerror = fail;
+    document.body.appendChild(script);
+  }).catch((err) => {
+    paystackLoaderPromise = null;
+    throw err;
+  });
+
+  return paystackLoaderPromise;
+}
+
 /* 🔥 NEW — NETWORK COLLECTION HELPER (NO LOGIC REMOVED) */
 const getPackageCollection = (network) => {
   switch (network) {
@@ -57,6 +104,25 @@ const getPackageCollection = (network) => {
 /* ================= COMPONENT ================= */
 export default function AdminDashboard() {
   const navigate = useNavigate();
+  const topupTimeoutRef = useRef(null);
+
+  useEffect(() => {
+    return () => {
+      if (topupTimeoutRef.current) {
+        clearTimeout(topupTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    loadPaystackInline().catch((err) => {
+      console.error("Paystack preload failed:", err);
+    });
+  }, []);
+
+  const PAYSTACK_KEY =
+    process.env.REACT_APP_PAYSTACK_KEY ||
+    (typeof import.meta !== "undefined" ? import.meta.env?.VITE_PAYSTACK_KEY : undefined);
 
   /* THEME */
   const [theme, setTheme] = useState(
@@ -67,6 +133,12 @@ export default function AdminDashboard() {
   /* GLOBAL SWITCH */
   const [packagesActive, setPackagesActive] = useState(true);
   const [switchLoading, setSwitchLoading] = useState(false);
+
+  /* ADMIN WALLET */
+  const [walletBalance, setWalletBalance] = useState(0);
+  const [walletAmount, setWalletAmount] = useState("");
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletTopupProcessing, setWalletTopupProcessing] = useState(false);
 
 
   /* NETWORK FILTER */
@@ -97,14 +169,166 @@ export default function AdminDashboard() {
       await setDoc(ref, { packagesActive: true });
       setPackagesActive(true);
     }
+
+    await loadWalletBalance();
   }
 
   load();
 }, []);
 
- 
+  async function loadWalletBalance() {
+    try {
+      setWalletLoading(true);
+      const walletRef = doc(db, "settings", "adminWallet");
+      const walletSnap = await getDoc(walletRef);
 
- 
+      if (!walletSnap.exists()) {
+        await setDoc(walletRef, {
+          balance: 0,
+          updatedAt: serverTimestamp(),
+        });
+        setWalletBalance(0);
+        return;
+      }
+
+      setWalletBalance(Number(walletSnap.data().balance || 0));
+    } catch (err) {
+      console.error("Failed to load admin wallet:", err);
+    } finally {
+      setWalletLoading(false);
+    }
+  }
+
+  async function handleWalletTopup() {
+    if (walletTopupProcessing) return;
+
+    const amount = Number(walletAmount);
+
+    if (!amount || amount <= 0) {
+      alert("Enter a valid top-up amount");
+      return;
+    }
+
+    const resolvedKey = String(PAYSTACK_KEY || "").trim();
+
+    if (!resolvedKey) {
+      alert("Missing Paystack key. Set REACT_APP_PAYSTACK_KEY in your environment.");
+      return;
+    }
+
+    if (!resolvedKey.startsWith("pk_")) {
+      alert("Invalid Paystack key. Use your PUBLIC key (starts with pk_).\nDo not use secret key.");
+      return;
+    }
+
+    try {
+      setWalletTopupProcessing(true);
+
+      await loadPaystackInline();
+
+      if (!window.PaystackPop) {
+        throw new Error("Paystack script loaded but PaystackPop is unavailable");
+      }
+
+      // Failsafe: reset button state if Paystack modal never resolves.
+      topupTimeoutRef.current = window.setTimeout(() => {
+        setWalletTopupProcessing(false);
+      }, 120000);
+
+      const processTopupSuccess = async (res) => {
+        try {
+          if (!res?.reference) {
+            throw new Error("Missing payment reference from Paystack callback");
+          }
+
+          const walletRef = doc(db, "settings", "adminWallet");
+          const result = await runTransaction(db, async (transaction) => {
+            const snap = await transaction.get(walletRef);
+            const currentBalance = snap.exists()
+              ? Number(snap.data().balance || 0)
+              : 0;
+            const newBalance = currentBalance + amount;
+
+            transaction.set(
+              walletRef,
+              {
+                balance: newBalance,
+                updatedAt: serverTimestamp(),
+                lastTopUpAt: serverTimestamp(),
+                lastTopUpRef: res.reference,
+              },
+              { merge: true }
+            );
+
+            return newBalance;
+          });
+
+          await addDoc(collection(db, "admin_wallet_ledger"), {
+            type: "topup",
+            amount,
+            reference: res.reference,
+            balanceAfter: result,
+            createdAt: serverTimestamp(),
+          });
+
+          setWalletBalance(result);
+          setWalletAmount("");
+          alert("Wallet loaded successfully");
+        } catch (err) {
+          console.error("Wallet top-up failed:", err);
+          alert("Payment received but wallet update failed. Check logs.");
+        } finally {
+          if (topupTimeoutRef.current) {
+            clearTimeout(topupTimeoutRef.current);
+            topupTimeoutRef.current = null;
+          }
+          setWalletTopupProcessing(false);
+        }
+      };
+
+      const paystackOptions = {
+        key: resolvedKey,
+        email: `admin-wallet-${Date.now()}@ohemaa.app`,
+        amount: Math.round(amount * 100),
+        currency: "GHS",
+        metadata: {
+          custom_fields: [
+            {
+              display_name: "Purpose",
+              variable_name: "purpose",
+              value: "admin_wallet_topup",
+            },
+          ],
+        },
+        callback: function (res) {
+          processTopupSuccess(res);
+        },
+        onClose: function () {
+          if (topupTimeoutRef.current) {
+            clearTimeout(topupTimeoutRef.current);
+            topupTimeoutRef.current = null;
+          }
+          setWalletTopupProcessing(false);
+        },
+      };
+
+      const handler = window.PaystackPop.setup(paystackOptions);
+      if (!handler || typeof handler.openIframe !== "function") {
+        throw new Error("Paystack handler did not initialize correctly");
+      }
+
+      handler.openIframe();
+    } catch (err) {
+      console.error("Failed to initialize Paystack:", err);
+      if (topupTimeoutRef.current) {
+        clearTimeout(topupTimeoutRef.current);
+        topupTimeoutRef.current = null;
+      }
+      setWalletTopupProcessing(false);
+      const msg = err?.message || "Unknown Paystack initialization error";
+      alert(`Could not start payment: ${msg}`);
+    }
+  }
 
   useEffect(() => {
   async function load() {
@@ -315,6 +539,46 @@ export default function AdminDashboard() {
               <span className={`w-2.5 h-2.5 rounded-full ${packagesActive ? "bg-emerald-400 animate-pulse" : "bg-red-400"}`} />
               {switchLoading ? "Updating…" : packagesActive ? "Live — Active" : "Offline"}
             </button>
+          </div>
+        </div>
+
+        {/* ───────── ADMIN WALLET ───────── */}
+        <div className={`p-5 md:p-6 rounded-3xl ${glass}`}>
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-5">
+            <div>
+              <p className="text-xs font-semibold tracking-[0.15em] uppercase opacity-40 mb-1">
+                Admin Wallet
+              </p>
+              <h2 className="text-lg md:text-xl font-black">Wallet Balance</h2>
+              <p className={`text-2xl mt-2 font-extrabold ${isDark ? "text-emerald-300" : "text-emerald-700"}`}>
+                {walletLoading ? "Loading..." : formatGhs(walletBalance)}
+              </p>
+              <p className={`text-xs mt-1 ${isDark ? "opacity-50" : "text-slate-500"}`}>
+                Every customer purchase deducts from this balance.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-3 w-full md:w-auto">
+              <input
+                type="number"
+                min="1"
+                placeholder="Top-up amount (GHS)"
+                value={walletAmount}
+                onChange={(e) => setWalletAmount(e.target.value)}
+                className={`p-3 rounded-2xl text-sm transition-all w-full md:w-56 ${inputCls}`}
+              />
+              <button
+                onClick={handleWalletTopup}
+                disabled={walletTopupProcessing}
+                className={`px-5 py-3 rounded-2xl font-bold text-sm text-white transition-all active:scale-95 ${
+                  walletTopupProcessing
+                    ? "bg-slate-500 cursor-not-allowed"
+                    : "bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500"
+                }`}
+              >
+                {walletTopupProcessing ? "Processing..." : "Load Wallet"}
+              </button>
+            </div>
           </div>
         </div>
 

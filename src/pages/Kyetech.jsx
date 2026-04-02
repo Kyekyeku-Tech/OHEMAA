@@ -5,6 +5,7 @@ import {
   query,
   where,
   addDoc,
+  runTransaction,
   serverTimestamp,
   doc,
   getDoc,
@@ -134,6 +135,44 @@ export default function Kyetech() {
     return { totalPaid: price + fee };
   };
 
+  const deductAdminWallet = async ({ amount, paystackRef, phone: buyerPhone, packageId }) => {
+    const walletRef = doc(db, "settings", "adminWallet");
+    const numericAmount = Number(amount || 0);
+
+    const walletAfter = await runTransaction(db, async (transaction) => {
+      const walletSnap = await transaction.get(walletRef);
+      const currentBalance = walletSnap.exists()
+        ? Number(walletSnap.data().balance || 0)
+        : 0;
+      const nextBalance = currentBalance - numericAmount;
+
+      transaction.set(
+        walletRef,
+        {
+          balance: nextBalance,
+          updatedAt: serverTimestamp(),
+          lastDebitAt: serverTimestamp(),
+          lastDebitRef: paystackRef,
+        },
+        { merge: true }
+      );
+
+      return nextBalance;
+    });
+
+    await addDoc(collection(db, "admin_wallet_ledger"), {
+      type: "debit",
+      amount: numericAmount,
+      reference: paystackRef,
+      balanceAfter: walletAfter,
+      customerPhone: buyerPhone,
+      packageId,
+      createdAt: serverTimestamp(),
+    });
+
+    return walletAfter;
+  };
+
   /* ===== PACKAGE AVAILABILITY ===== */
   const getAvailability = (pkg) => {
     if (!packagesActive) return { text: "Unavailable", color: "bg-red-600" };
@@ -204,6 +243,7 @@ export default function Kyetech() {
   /* ================= PAYMENT ================= */
   const startPayment = () => {
     if (!selectedPkg || !isValidPhone(phone)) return alert("Invalid details");
+    if (!PAYSTACK_KEY) return alert("Paystack key missing");
 
     setProcessing(true);
     setShowSheet(false);
@@ -248,6 +288,19 @@ export default function Kyetech() {
 
   const handleSuccess = async (ref) => {
     const { totalPaid } = calculateTotal(selectedPkg.price);
+    const walletDebitAmount = Number(selectedPkg.price || 0);
+    let adminWalletBalanceAfter = null;
+
+    try {
+      adminWalletBalanceAfter = await deductAdminWallet({
+        amount: walletDebitAmount,
+        paystackRef: ref,
+        phone,
+        packageId: selectedPkg.id,
+      });
+    } catch (walletErr) {
+      console.error("⚠️ Admin wallet deduction failed:", walletErr);
+    }
 
     console.log("💰 Payment successful! Ref:", ref);
     console.log("📋 Creating order with details:", {
@@ -268,6 +321,9 @@ export default function Kyetech() {
       packageId: selectedPkg.id,
       packagePrice: selectedPkg.price,
       totalPaid,
+      walletDebitAmount,
+      adminWalletBalanceAfter,
+      walletDeducted: adminWalletBalanceAfter !== null,
       assignedAt: serverTimestamp(),
       paystackRef: ref,
     };
