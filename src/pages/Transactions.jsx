@@ -248,11 +248,10 @@ export default function Transactions() {
 
         const salePrice = getPackageSalePrice(t);
         const originalPrice = getOriginalPriceFromPackage(t.packageId);
-        const paid = Number(t.totalPaid || salePrice);
 
         acc.totalOriginal += originalPrice;
-        acc.totalSales += paid;
-        acc.totalCommission += paid - originalPrice;
+        acc.totalSales += salePrice;
+        acc.totalCommission += salePrice - originalPrice;
         return acc;
       },
       { totalOriginal: 0, totalSales: 0, totalCommission: 0 }

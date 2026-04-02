@@ -37,6 +37,8 @@ export default function Waec() {
 
   /* ===== CONFIG ===== */
   const PAYSTACK_KEY =
+    process.env.REACT_APP_PAYSTACK_KEY_CUSTOMER ||
+    import.meta.env?.VITE_PAYSTACK_KEY_CUSTOMER ||
     import.meta.env?.VITE_PAYSTACK_KEY ||
     process.env.REACT_APP_PAYSTACK_KEY;
 

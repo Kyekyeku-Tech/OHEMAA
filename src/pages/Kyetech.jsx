@@ -22,6 +22,26 @@ import telecelLogo from "../assets/networks/telecel.png";
 /* ================= CONFIG ================= */
 const PAYSTACK_FEE_RATE = 0.02;
 
+const ADMIN_WALLET_COST_BY_GB = {
+  1: 4.4,
+  2: 8.5,
+  3: 12.5,
+  4: 16.5,
+  5: 21,
+  6: 25,
+  7: 29,
+  8: 33,
+  9: 38,
+  10: 42,
+  15: 59,
+  20: 77,
+  25: 98,
+  30: 118,
+  40: 158,
+  50: 198,
+  100: 385,
+};
+
 const ADMIN_PHONE =
   import.meta.env?.VITE_ADMIN_PHONE ||
   process.env.REACT_APP_ADMIN_PHONE ||
@@ -112,7 +132,10 @@ export default function Kyetech() {
   const [filterDate, setFilterDate] = useState(todayISO);
 
   const PAYSTACK_KEY =
-    import.meta.env?.VITE_PAYSTACK_KEY || process.env.REACT_APP_PAYSTACK_KEY;
+    process.env.REACT_APP_PAYSTACK_KEY_CUSTOMER ||
+    import.meta.env?.VITE_PAYSTACK_KEY_CUSTOMER ||
+    import.meta.env?.VITE_PAYSTACK_KEY ||
+    process.env.REACT_APP_PAYSTACK_KEY;
 
   const apiKey =
     import.meta.env?.VITE_MNOTIFY_KEY ||
@@ -127,12 +150,21 @@ export default function Kyetech() {
 
   const normalizePhone = (p) => (p?.startsWith("0") ? "233" + p.slice(1) : p);
 
-  const generateRandomEmail = () =>
-    `user-${Math.random().toString(36).slice(2, 10)}@gmail.com`;
+  const generateCustomerEmail = (customerPhone) =>
+    `${customerPhone}@ohemaadigitalhub.store`;
 
   const calculateTotal = (price) => {
     const fee = price * PAYSTACK_FEE_RATE;
     return { totalPaid: price + fee };
+  };
+
+  const getAdminWalletDebitAmount = (pkg) => {
+    const gb = Number(pkg?.id?.replace(/[^0-9]/g, ""));
+    if (Number.isFinite(gb) && ADMIN_WALLET_COST_BY_GB[gb] != null) {
+      return Number(ADMIN_WALLET_COST_BY_GB[gb]);
+    }
+    // Fallback for unexpected package IDs not in the table.
+    return Number(pkg?.price || 0);
   };
 
   const deductAdminWallet = async ({ amount, paystackRef, phone: buyerPhone, packageId }) => {
@@ -252,7 +284,7 @@ export default function Kyetech() {
 
     window.PaystackPop.setup({
       key: PAYSTACK_KEY,
-      email: generateRandomEmail(),
+      email: generateCustomerEmail(phone),
       amount: Math.round(totalPaid * 100),
       currency: "GHS",
 
@@ -288,7 +320,7 @@ export default function Kyetech() {
 
   const handleSuccess = async (ref) => {
     const { totalPaid } = calculateTotal(selectedPkg.price);
-    const walletDebitAmount = Number(selectedPkg.price || 0);
+    const walletDebitAmount = getAdminWalletDebitAmount(selectedPkg);
     let adminWalletBalanceAfter = null;
 
     try {
@@ -349,7 +381,7 @@ export default function Kyetech() {
     // Send SMS notifications
     await sendSMS(
       phone,
-      `Your Order on ${phone} received and processing.\nDelivery in 5–10 minutes.\nThank you for choosing ukonnectivity.site`
+      `Your Order on ${phone} received and processing.\nDelivery in 5–10 minutes.\nThank you for choosing ohemaadigitahub.store`
     );
     console.log("📱 Customer SMS sent");
 

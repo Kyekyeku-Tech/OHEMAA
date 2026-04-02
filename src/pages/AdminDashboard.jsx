@@ -121,8 +121,11 @@ export default function AdminDashboard() {
   }, []);
 
   const PAYSTACK_KEY =
+    process.env.REACT_APP_PAYSTACK_KEY_ADMIN ||
     process.env.REACT_APP_PAYSTACK_KEY ||
-    (typeof import.meta !== "undefined" ? import.meta.env?.VITE_PAYSTACK_KEY : undefined);
+    (typeof import.meta !== "undefined"
+      ? import.meta.env?.VITE_PAYSTACK_KEY_ADMIN || import.meta.env?.VITE_PAYSTACK_KEY
+      : undefined);
 
   /* THEME */
   const [theme, setTheme] = useState(
@@ -139,6 +142,7 @@ export default function AdminDashboard() {
   const [walletAmount, setWalletAmount] = useState("");
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletTopupProcessing, setWalletTopupProcessing] = useState(false);
+  const [adminEmail, setAdminEmail] = useState("");
 
 
   /* NETWORK FILTER */
@@ -209,10 +213,18 @@ export default function AdminDashboard() {
       return;
     }
 
+    const email = prompt("Enter your email to receive the payment receipt:");
+    if (!email || !email.trim()) {
+      alert("Email is required to proceed");
+      return;
+    }
+
+    setAdminEmail(email.trim());
+
     const resolvedKey = String(PAYSTACK_KEY || "").trim();
 
     if (!resolvedKey) {
-      alert("Missing Paystack key. Set REACT_APP_PAYSTACK_KEY in your environment.");
+      alert("Missing Paystack key. Set REACT_APP_PAYSTACK_KEY_ADMIN in your environment.");
       return;
     }
 
@@ -268,6 +280,7 @@ export default function AdminDashboard() {
             amount,
             reference: res.reference,
             balanceAfter: result,
+            adminEmail: email.trim(),
             createdAt: serverTimestamp(),
           });
 
@@ -288,7 +301,7 @@ export default function AdminDashboard() {
 
       const paystackOptions = {
         key: resolvedKey,
-        email: `admin-wallet-${Date.now()}@ohemaa.app`,
+        email: email.trim(),
         amount: Math.round(amount * 100),
         currency: "GHS",
         metadata: {
