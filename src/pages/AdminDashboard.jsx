@@ -142,7 +142,6 @@ export default function AdminDashboard() {
   const [walletAmount, setWalletAmount] = useState("");
   const [walletLoading, setWalletLoading] = useState(false);
   const [walletTopupProcessing, setWalletTopupProcessing] = useState(false);
-  const [adminEmail, setAdminEmail] = useState("");
 
 
   /* NETWORK FILTER */
@@ -218,8 +217,6 @@ export default function AdminDashboard() {
       alert("Email is required to proceed");
       return;
     }
-
-    setAdminEmail(email.trim());
 
     const resolvedKey = String(PAYSTACK_KEY || "").trim();
 
